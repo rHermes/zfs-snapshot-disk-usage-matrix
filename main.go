@@ -1,3 +1,19 @@
+/*
+Copyright 2021 Teodor Spæren
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+   http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
 package main
 
 import (
@@ -9,16 +25,18 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"text/tabwriter"
-	"time"
 
 	"github.com/dustin/go-humanize"
 )
 
 var (
-	rawFlag  = flag.Bool("raw", false, "If set, get numbers exactly.")
-	hostFlag = flag.String("host", "", "If set, the hostname which we should ssh into to do the commands")
-	nameFlag = flag.String("name", "", "The name of the dataset to scan")
+	rawFlag     = flag.Bool("raw", false, "If set, get numbers exactly.")
+	hostFlag    = flag.String("host", "", "If set, the hostname which we should ssh into to do the commands")
+	nameFlag    = flag.String("name", "", "The name of the dataset to scan")
+	workersFlag = flag.Int("workers", 5, "The number of parallel workers")
+	cmdFlag     = flag.String("cmd", "/sbin/zfs", "The path to the zfs cmd")
 )
 
 type Pair struct {
@@ -34,9 +52,9 @@ type Dataset struct {
 
 func (d *Dataset) zfsDefs() (string, []string) {
 	if d.host == "" {
-		return "/sbin/zfs", []string{}
+		return *cmdFlag, []string{}
 	} else {
-		return "ssh", []string{d.host, "/sbin/zfs"}
+		return "ssh", []string{d.host, *cmdFlag}
 	}
 }
 
@@ -85,11 +103,10 @@ func (d *Dataset) spaceBetweenSnapshots(from, to string) (uint64, error) {
 	c.Stderr = &stderr
 	c.Stdout = &stdout
 
-	t0 := time.Now()
+	// t0 := time.Now()
 	if err := c.Run(); err != nil {
 		return 0, fmt.Errorf("executing command: %v: %s", err, stderr.String())
 	}
-	dur := time.Since(t0)
 
 	re := regexp.MustCompile(`(?m)^reclaim\t(0|[1-9][0-9]*)$`)
 	mtch := re.FindStringSubmatch(stdout.String())
@@ -102,22 +119,52 @@ func (d *Dataset) spaceBetweenSnapshots(from, to string) (uint64, error) {
 		panic("this should never happen")
 	}
 
-	log.Printf("[%s] -> [%s] took %s and returned %d", from, to, dur.String(), ans)
+	// dur := time.Since(t0)
+	// log.Printf("[%s] -> [%s] took %s and returned %d", from, to, dur.String(), ans)
 	return ans, nil
 }
 
 func (d *Dataset) getAllCombs(snaps []string) (map[Pair]uint64, error) {
 	ans := make(map[Pair]uint64)
 
+	var (
+		wg   sync.WaitGroup
+		mu   sync.Mutex
+		perr error
+	)
+
+	sem := make(chan struct{}, *workersFlag)
+
 	for i, to := range snaps {
 		for _, from := range snaps[:i+1] {
-			spd, err := d.spaceBetweenSnapshots(from, to)
-			if err != nil {
-				return nil, fmt.Errorf("space between snapshots: %v", err)
-			}
-			ans[Pair{From: from, To: to}] = spd
+			sem <- struct{}{}
+			wg.Add(1)
+
+			go func(from, to string) {
+				defer wg.Done()
+				defer func() {
+					<-sem
+				}()
+
+				spd, err := d.spaceBetweenSnapshots(from, to)
+				mu.Lock()
+				defer mu.Unlock()
+
+				if err != nil {
+					perr = err
+					return
+				}
+				ans[Pair{From: from, To: to}] = spd
+			}(from, to)
 		}
 	}
+
+	wg.Wait()
+
+	if perr != nil {
+		return nil, fmt.Errorf("space between snapshots: %v", perr)
+	}
+
 	return ans, nil
 }
 
@@ -128,10 +175,12 @@ func (d *Dataset) SavingMatrix() (string, error) {
 	}
 
 	// Get all the action
+	// t0 := time.Now()
 	pairs, err := d.getAllCombs(snaps)
 	if err != nil {
 		return "", err
 	}
+	// log.Printf("getting all pairs took: %s", time.Since(t0).String())
 
 	// Remove common prefixes, to make it easier to read the output
 	fsnaps := TrimPrefix(snaps)
@@ -139,7 +188,7 @@ func (d *Dataset) SavingMatrix() (string, error) {
 	var buf strings.Builder
 	w := tabwriter.NewWriter(&buf, 0, 0, 1, ' ', tabwriter.AlignRight)
 
-	fmt.Fprintf(w, "\\")
+	fmt.Fprintf(w, "to\\from")
 
 	// Write the header
 	for _, snap := range fsnaps {

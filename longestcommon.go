@@ -1,3 +1,19 @@
+/*
+Copyright 2021 Teodor Spæren
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+   http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
 package main
 
 import "strings"
@@ -15,28 +31,8 @@ func TrimPrefix(strs []string) []string {
 	return nstrs
 }
 
-// TrimSuffix removes the longest common suffix from all provided strings
-func TrimSuffix(strs []string) []string {
-	p := Suffix(strs)
-	nstrs := make([]string, len(strs))
-	for i, s := range strs {
-		nstrs[i] = strings.TrimSuffix(s, p)
-	}
-
-	return nstrs
-}
-
 // Prefix returns the longest common prefix of the provided strings
 func Prefix(strs []string) string {
-	return longestCommonXfix(strs, true)
-}
-
-// Suffix returns the longest common suffix of the provided strings
-func Suffix(strs []string) string {
-	return longestCommonXfix(strs, false)
-}
-
-func longestCommonXfix(strs []string, pre bool) string {
 	// short-circuit empty list
 	if len(strs) == 0 {
 		return ""
@@ -60,30 +56,15 @@ func longestCommonXfix(strs []string, pre bool) string {
 			maxl = strl
 		}
 		// compare letters
-		if pre {
-			// prefix, iterate left to right
-			for i := 0; i < maxl; i++ {
-				if xfix[i] != str[i] {
-					xfix = xfix[:i]
-					break
-				}
+		// prefix, iterate left to right
+		for i := 0; i < maxl; i++ {
+			if xfix[i] != str[i] {
+				xfix = xfix[:i]
+				break
 			}
-			if len(xfix) > maxl {
-				xfix = xfix[:maxl]
-			}
-		} else {
-			// suffix, iternate right to left
-			for i := 0; i < maxl; i++ {
-				xi := xfixl - i - 1
-				si := strl - i - 1
-				if xfix[xi] != str[si] {
-					xfix = xfix[xi+1:]
-					break
-				}
-			}
-			if len(xfix) > maxl {
-				xfix = xfix[len(xfix)-maxl:]
-			}
+		}
+		if len(xfix) > maxl {
+			xfix = xfix[:maxl]
 		}
 	}
 	return xfix
