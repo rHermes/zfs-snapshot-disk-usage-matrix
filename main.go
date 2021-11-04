@@ -31,10 +31,11 @@ import (
 )
 
 var (
-	rawFlag  = flag.Bool("raw", false, "If set, get numbers exactly.")
-	hostFlag = flag.String("host", "", "If set, the hostname which we should ssh into to do the commands")
-	nameFlag = flag.String("name", "", "The name of the dataset to scan")
-	cmdFlag  = flag.String("cmd", "/sbin/zfs", "The path to the zfs cmd")
+	rawFlag     = flag.Bool("raw", false, "If set, get numbers exactly.")
+	hostFlag    = flag.String("host", "", "If set, the hostname which we should ssh into to do the commands")
+	nameFlag    = flag.String("name", "", "The name of the dataset to scan")
+	cmdFlag     = flag.String("cmd", "/sbin/zfs", "The path to the zfs cmd")
+	recurseFlag = flag.Bool("recurse", false, "Calculate if snapshots where recursively deleted")
 )
 
 type Pair struct {
@@ -51,9 +52,8 @@ type Dataset struct {
 func (d *Dataset) zfsDefs() (string, []string) {
 	if d.host == "" {
 		return *cmdFlag, []string{}
-	} else {
-		return "ssh", []string{d.host, *cmdFlag}
 	}
+	return "ssh", []string{d.host, *cmdFlag}
 }
 
 func (d *Dataset) snapshotByCreation() ([]string, error) {
@@ -91,8 +91,12 @@ func (d *Dataset) spaceBetweenSnapshots(from, to string) (uint64, error) {
 	cmd, args := d.zfsDefs()
 	specArgs := []string{
 		"destroy", "-nvp",
-		fmt.Sprintf("%s@%s%%%s", d.name, from, to),
 	}
+	if *recurseFlag {
+		specArgs = append(specArgs, "-r")
+	}
+
+	specArgs = append(specArgs, fmt.Sprintf("%s@%s%%%s", d.name, from, to))
 	finalArgs := append(args, specArgs...)
 
 	c := exec.Command(cmd, finalArgs...)
@@ -163,9 +167,13 @@ func (d *Dataset) getAllCombsEx(snaps []string) (map[Pair]uint64, error) {
 	}
 
 	order := []Pair{}
+	shortFlags := "pn"
+	if *recurseFlag {
+		shortFlags += "r"
+	}
 	for i, to := range snaps {
 		for _, from := range snaps[:i+1] {
-			fmt.Fprintf(stdin, "/sbin/zfs destroy -p -n %s@%s%%%s\n", d.name, from, to)
+			fmt.Fprintf(stdin, "/sbin/zfs destroy -%s %s@%s%%%s\n", shortFlags, d.name, from, to)
 			order = append(order, Pair{From: from, To: to})
 		}
 	}
