@@ -25,18 +25,16 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
-	"sync"
 	"text/tabwriter"
 
 	"github.com/dustin/go-humanize"
 )
 
 var (
-	rawFlag     = flag.Bool("raw", false, "If set, get numbers exactly.")
-	hostFlag    = flag.String("host", "", "If set, the hostname which we should ssh into to do the commands")
-	nameFlag    = flag.String("name", "", "The name of the dataset to scan")
-	workersFlag = flag.Int("workers", 5, "The number of parallel workers")
-	cmdFlag     = flag.String("cmd", "/sbin/zfs", "The path to the zfs cmd")
+	rawFlag  = flag.Bool("raw", false, "If set, get numbers exactly.")
+	hostFlag = flag.String("host", "", "If set, the hostname which we should ssh into to do the commands")
+	nameFlag = flag.String("name", "", "The name of the dataset to scan")
+	cmdFlag  = flag.String("cmd", "/sbin/zfs", "The path to the zfs cmd")
 )
 
 type Pair struct {
@@ -127,45 +125,73 @@ func (d *Dataset) spaceBetweenSnapshots(from, to string) (uint64, error) {
 func (d *Dataset) getAllCombs(snaps []string) (map[Pair]uint64, error) {
 	ans := make(map[Pair]uint64)
 
-	var (
-		wg   sync.WaitGroup
-		mu   sync.Mutex
-		perr error
-	)
-
-	sem := make(chan struct{}, *workersFlag)
-
 	for i, to := range snaps {
 		for _, from := range snaps[:i+1] {
-			sem <- struct{}{}
-			wg.Add(1)
-
-			go func(from, to string) {
-				defer wg.Done()
-				defer func() {
-					<-sem
-				}()
-
-				spd, err := d.spaceBetweenSnapshots(from, to)
-				mu.Lock()
-				defer mu.Unlock()
-
-				if err != nil {
-					perr = err
-					return
-				}
-				ans[Pair{From: from, To: to}] = spd
-			}(from, to)
+			spd, err := d.spaceBetweenSnapshots(from, to)
+			if err != nil {
+				return nil, err
+			}
+			ans[Pair{From: from, To: to}] = spd
 		}
 	}
 
-	wg.Wait()
+	return ans, nil
+}
 
-	if perr != nil {
-		return nil, fmt.Errorf("space between snapshots: %v", perr)
+func (d *Dataset) getAllCombsEx(snaps []string) (map[Pair]uint64, error) {
+	// We only use this for external hosts.
+	if d.host == "" {
+		return d.getAllCombs(snaps)
 	}
 
-	return ans, nil
+	var (
+		stdout bytes.Buffer
+		stderr bytes.Buffer
+	)
+
+	cmd := exec.Command("ssh", d.host)
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		return nil, err
+	}
+
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	if err := cmd.Start(); err != nil {
+		return nil, err
+	}
+
+	order := []Pair{}
+	for i, to := range snaps {
+		for _, from := range snaps[:i+1] {
+			fmt.Fprintf(stdin, "/sbin/zfs destroy -p -n %s@%s%%%s\n", d.name, from, to)
+			order = append(order, Pair{From: from, To: to})
+		}
+	}
+	stdin.Close()
+
+	if err := cmd.Wait(); err != nil {
+		return nil, err
+	}
+
+	re := regexp.MustCompile(`(?m)^reclaim\t(0|[1-9][0-9]*)$`)
+	matches := re.FindAllStringSubmatch(stdout.String(), -1)
+	if len(matches) != len(order) {
+		return nil, fmt.Errorf("not enough matches: %s", stderr.String())
+	}
+
+	ret := make(map[Pair]uint64)
+	for i, match := range matches {
+		ans, err := strconv.ParseUint(match[1], 10, 64)
+		if err != nil {
+			panic("this should never happen")
+		}
+
+		ret[order[i]] = ans
+	}
+
+	return ret, nil
 }
 
 func (d *Dataset) SavingMatrix() (string, error) {
@@ -174,13 +200,10 @@ func (d *Dataset) SavingMatrix() (string, error) {
 		return "", err
 	}
 
-	// Get all the action
-	// t0 := time.Now()
-	pairs, err := d.getAllCombs(snaps)
+	pairs, err := d.getAllCombsEx(snaps)
 	if err != nil {
 		return "", err
 	}
-	// log.Printf("getting all pairs took: %s", time.Since(t0).String())
 
 	// Remove common prefixes, to make it easier to read the output
 	fsnaps := TrimPrefix(snaps)
