@@ -173,7 +173,7 @@ func (d *Dataset) getAllCombsEx(snaps []string) (map[Pair]uint64, error) {
 	}
 	for i, to := range snaps {
 		for _, from := range snaps[:i+1] {
-			fmt.Fprintf(stdin, "/sbin/zfs destroy -%s %s@%s%%%s\n", shortFlags, d.name, from, to)
+			fmt.Fprintf(stdin, "%s destroy -%s %s@%s%%%s\n", *cmdFlag, shortFlags, d.name, from, to)
 			order = append(order, Pair{From: from, To: to})
 		}
 	}
